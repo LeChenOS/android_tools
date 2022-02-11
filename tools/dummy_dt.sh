@@ -13,11 +13,10 @@ PROJECT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )/.." >/dev/null && pwd )"
 source $PROJECT_DIR/helpers/common_script.sh "y"
 
 proprietary_rootdir () {
-    TSTART=$(grep -nr "# Misc" "$DT_DIR"/proprietary-files.txt | sed "s|:.*||g")
-    TEND=$(wc -l "$DT_DIR"/proprietary-files.txt | sed "s| .*||g")
+    TSTART=$(grep -nr "# Misc" "$DT_DIR"/proprietary-files.txt | sed "s|:.*||g" | head -1)
+    TEND=$(wc -l "$DT_DIR"/proprietary-files.txt | sed "s| .*||g" | head -1)
     sed -n "${TSTART},${TEND}p" "$DT_DIR"/proprietary-files.txt > "$PROJECT_DIR"/dummy_dt/working/misc.txt
-    while IFS= read -r line
-    do
+    while IFS= read -r line; do
         if grep -ril "$line" "$DT_DIR"/rootdir/; then
             if echo "$line" | grep -iE "apk|jar"; then
                 echo "$line" >> "$PROJECT_DIR"/dummy_dt/working/newmisc.txt
@@ -39,42 +38,18 @@ proprietary_rootdir () {
 }
 
 proprietary () {
-    echo -e "Preparing proprietary-files.txt"
+    [[ "$VERBOSE" != "n" ]] && echo -e "Preparing proprietary-files.txt"
     bash $PROJECT_DIR/tools/proprietary-files.sh "$PROJECT_DIR"/dummy_dt/working/all_files.txt > /dev/null 2>&1
     cp -a $PROJECT_DIR/working/proprietary-files.txt "$DT_DIR"/proprietary-files.txt
     # find bin's in # Misc which exist in rootdir/
     proprietary_rootdir > /dev/null 2>&1
     # proprietary-files-system.txt
     cat "$DT_DIR"/proprietary-files.txt | grep -v "vendor/" | sort -u | sed "s|#.*||g" | sed '/^$/d' > "$DT_DIR"/proprietary-files-system.txt
-    # dump vendor tree
-    if [[ ! -z "$ROM_PATH" ]]; then
-        echo -e "Dumping blobs"
-        rm -rf "$PROJECT_DIR"/vendor/"$BRAND"/"$DEVICE"/
-        cp -a "$DT_DIR"/proprietary-files.txt "$PROJECT_DIR"/working/proprietary-files.txt
-        cd "$PROJECT_DIR"
-        bash "$PROJECT_DIR/helpers/extract_blobs/extract-files.sh" "$ROM_PATH" > /dev/null 2>&1
-        cd "$PROJECT_DIR"/vendor/"$BRAND"/"$DEVICE"
-        if [[ ! -z "$GIT_TOKEN" ]]; then
-            git init . > /dev/null 2>&1
-            find -size +97M -printf '%P\n' -o -name *sensetime* -printf '%P\n' -o -name *.lic -printf '%P\n' > .gitignore
-            git checkout -b $BRANCH > /dev/null 2>&1
-            git add --all > /dev/null 2>&1
-            git -c "user.name=AndroidBlobs" -c "user.email=AndroidBlobs@github.com" commit -sm "$DESCRIPTION" > /dev/null 2>&1
-            curl -s -X POST -H "Authorization: token ${GIT_TOKEN}" -d '{"name": "'"$VT_REPO"'","description": "'"$VT_REPO_DESC"'","private": false,"has_issues": true,"has_projects": false,"has_wiki": true}' "https://api.github.com/orgs/AndroidBlobs/repos" > /dev/null 2>&1
-            git push https://"$GIT_TOKEN"@github.com/AndroidBlobs/"$VT_REPO".git --all --force > /dev/null 2>&1
-        fi
-    fi
-}
-
-common_setup () {
-    rm -rf $PROJECT_DIR/dummy_dt/working/*
-    [[ "$VERBOSE" != "n" ]] && echo -e "Fetching all_files.txt & build.prop "
 }
 
 common_core () {
     # Variables
-    source $PROJECT_DIR/helpers/rom_vars.sh "$PROJECT_DIR/dummy_dt/working/system_build.prop" > /dev/null 2>&1
-    BRANCH=$(echo $DESCRIPTION | tr ' ' '-' | sort -u | head -n 1 )
+    source $PROJECT_DIR/helpers/rom_vars.sh "$ROM_PATH" > /dev/null 2>&1
     DT_DIR="$PROJECT_DIR"/dummy_dt/"$BRAND"/"$DEVICE"
     DT_REPO=$(echo device_$BRAND\_$DEVICE)
     DT_REPO_DESC=$(echo "Dummy device tree for $MODEL")
@@ -83,9 +58,9 @@ common_core () {
 
     # skip or proceed
     if [ -z "$BRAND" ] || [ -z "$DEVICE" ] || [ -z "$FINGERPRINT" ] || [ -z "$VERSION" ] || [ ! -e $PROJECT_DIR/dummy_dt/working/system_build.prop ] || [ ! -e $PROJECT_DIR/dummy_dt/working/vendor_build.prop ] ; then
-        echo -e "Error! Skipping this device."
+        echo -e "Dummy DT: Error! Empty var!"
     elif [[ "$VERSION" -lt 8 ]]; then
-        echo -e "Error! Pre-Oreo ROM's not supported!"
+        echo -e "Dummy DT: Error! Pre-Oreo ROM's not supported!"
     else
         echo -e "Preparing Dummy DT"
         call_methods
@@ -94,41 +69,69 @@ common_core () {
 
 call_methods () {
     rm -rf "$DT_DIR" && mkdir -p "$DT_DIR"
-    # system.prop & vendor_prop.mk
-    echo -e "Preparing vendor_prop.mk"
-    bash $PROJECT_DIR/tools/system_vendor_prop.sh $PROJECT_DIR/dummy_dt/working/system_build.prop $PROJECT_DIR/dummy_dt/working/vendor_build.prop > /dev/null 2>&1
+    # create repo's
+    if [[ "$ORGMEMBER" == "y" ]] && [[ ! -z "$GIT_TOKEN" ]]; then
+        ORG="AndroidBlobs"
+        GITHUB_EMAIL="${ORG}@github.com"
+        curl -s -X POST -H "Authorization: token ${GIT_TOKEN}" -d '{"name": "'"$DT_REPO"'","description": "'"$DT_REPO_DESC"'","private": false,"has_issues": true,"has_projects": false,"has_wiki": true}' "https://api.github.com/orgs/$ORG/repos" > /dev/null 2>&1
+        curl -s -X POST -H "Authorization: token ${GIT_TOKEN}" -d '{"name": "'"$VT_REPO"'","description": "'"$VT_REPO_DESC"'","private": false,"has_issues": true,"has_projects": false,"has_wiki": true}' "https://api.github.com/orgs/$ORG/repos" > /dev/null 2>&1
+        curl -s -X PUT -H "Authorization: token ${GIT_TOKEN}" -H "Accept: application/vnd.github.mercy-preview+json" -d '{ "names": ["'"$TOPIC1"'","'"$TOPIC2"'","'"$TOPIC3"'"]}' "https://api.github.com/repos/${ORG}/${DT_REPO}/topics" > /dev/null 2>&1
+        curl -s -X PUT -H "Authorization: token ${GIT_TOKEN}" -H "Accept: application/vnd.github.mercy-preview+json" -d '{ "names": ["'"$TOPIC1"'","'"$TOPIC2"'","'"$TOPIC3"'"]}' "https://api.github.com/repos/${ORG}/${VT_REPO}/topics" > /dev/null 2>&1
+    elif [[ ! -z "$GIT_TOKEN" ]] && [[ ! -z "$GITHUB_EMAIL" ]] && [[ ! -z "$GITHUB_USER" ]]; then
+        ORG="$GITHUB_USER"
+        curl -s -X POST -H "Authorization: token ${GIT_TOKEN}" -d '{"name": "'"$DT_REPO"'","description": "'"$DT_REPO_DESC"'","private": false,"has_issues": true,"has_projects": false,"has_wiki": true}' "https://api.github.com/orgs/$ORG/repos" > /dev/null 2>&1
+        curl -s -X POST -H "Authorization: token ${GIT_TOKEN}" -d '{"name": "'"$VT_REPO"'","description": "'"$VT_REPO_DESC"'","private": false,"has_issues": true,"has_projects": false,"has_wiki": true}' "https://api.github.com/orgs/$ORG/repos" > /dev/null 2>&1
+    fi
+    [[ ! -z "$GIT_TOKEN" ]] && wget "https://raw.githubusercontent.com/$ORG/$DT_REPO/$BRANCH/Android.mk" -O "$PROJECT_DIR/dummy_dt/working/check" 2>/dev/null && echo "Dummy DT already done!" && exit 1
+
+    # DummyDT
+    [[ "$VERBOSE" != "n" ]] && echo -e "Preparing vendor_prop.mk"
+    bash $PROJECT_DIR/tools/vendor_prop.sh ${ROM_PATH} > /dev/null 2>&1
     cp -a $PROJECT_DIR/working/* "$DT_DIR"/
-    # Device configs
     common_dt
-    common_overlay
-    # proprietary-files
+    common_overlay > /dev/null 2>&1
     proprietary
+    # oppo_product
+    [[ -e ${ROM_PATH}/oppo_product/etc/audio_policy_configuration.xml ]] && cat ${ROM_PATH}/oppo_product/etc/audio_policy_configuration.xml > "$DT_DIR"/configs/audio/audio_policy_configuration.xml
+    [[ -e ${ROM_PATH}/oppo_product/etc/power_profile/power_profile.xml ]] && cat ${ROM_PATH}/oppo_product/etc/power_profile/power_profile.xml > "$DT_DIR"/overlay/frameworks/base/core/res/res/xml/power_profile.xml
     # Git commit
-    [[ ! -z "$GIT_TOKEN" ]] && git_op
+    [[ ! -z "$ORG" ]] && git_op
     # clean
     rm -rf $PROJECT_DIR/dummy_dt/working/* $PROJECT_DIR/working/*
 }
 
 git_op () {
     cd "$DT_DIR"
-    echo -e "Performing git operations"
+    [[ "$VERBOSE" != "n" ]] && echo -e "Pushing DummyDT"
     git init . > /dev/null 2>&1
     git checkout -b $BRANCH > /dev/null 2>&1
     git add --all > /dev/null 2>&1
     git -c "user.name=ShivamKumarJha" -c "user.email=jha.shivam3@gmail.com" commit -sm "$DESCRIPTION" > /dev/null 2>&1
-    curl -s -X POST -H "Authorization: token ${GIT_TOKEN}" -d '{"name": "'"$DT_REPO"'","description": "'"$DT_REPO_DESC"'","private": false,"has_issues": true,"has_projects": false,"has_wiki": true}' "https://api.github.com/orgs/AndroidBlobs/repos" > /dev/null 2>&1
-    git push https://"$GIT_TOKEN"@github.com/AndroidBlobs/"$DT_REPO".git --all
+    git push https://"$GIT_TOKEN"@github.com/"$ORG"/"$DT_REPO".git --all > /dev/null 2>&1
+    echo -e "Dumping blobs"
+    rm -rf "$PROJECT_DIR"/vendor/"$BRAND"/"$DEVICE"/
+    cp -a "$DT_DIR"/proprietary-files.txt "$PROJECT_DIR"/working/proprietary-files.txt
+    cd "$PROJECT_DIR"
+    bash "$PROJECT_DIR/helpers/extract_blobs/extract-files.sh" "$ROM_PATH" > /dev/null 2>&1
+    cd "$PROJECT_DIR"/vendor/"$BRAND"/"$DEVICE"
+    git init . > /dev/null 2>&1
+    find -size +97M -printf '%P\n' -o -name *sensetime* -printf '%P\n' -o -name *.lic -printf '%P\n' > .gitignore
+    git checkout -b $BRANCH > /dev/null 2>&1
+    git add --all > /dev/null 2>&1
+    git -c "user.name=$ORG" -c "user.email=$GITHUB_EMAIL" commit -sm "$DESCRIPTION" > /dev/null 2>&1
+    git push https://"$GIT_TOKEN"@github.com/"$ORG"/"$VT_REPO".git --all > /dev/null 2>&1
     # Telegram
-    if [ ! -z "$TG_API" ]; then
+    if [ ! -z "$TG_API" ] && [[ "$ORGMEMBER" == "y" ]]; then
         [[ "$VERBOSE" != "n" ]] && echo -e "Sending telegram notification"
         printf "<b>Brand: $BRAND</b>" > $PROJECT_DIR/dummy_dt/working/tg.html
         printf "\n<b>Device: $DEVICE</b>" >> $PROJECT_DIR/dummy_dt/working/tg.html
         printf "\n<b>Model: $MODEL</b>" >> $PROJECT_DIR/dummy_dt/working/tg.html
         printf "\n<b>Version:</b> $VERSION" >> $PROJECT_DIR/dummy_dt/working/tg.html
         printf "\n<b>Fingerprint:</b> $FINGERPRINT" >> $PROJECT_DIR/dummy_dt/working/tg.html
+        [[ ! -z "$PLATFORM" ]] && printf "\n<b>Platform:</b> $PLATFORM" >> $PROJECT_DIR/dummy_dt/working/tg.html
         printf "\n<b>GitHub:</b>" >> $PROJECT_DIR/dummy_dt/working/tg.html
-        printf "\n<a href=\"https://github.com/AndroidBlobs/$DT_REPO/tree/$BRANCH/\">Device tree</a>" >> $PROJECT_DIR/dummy_dt/working/tg.html
-        printf "\n<a href=\"https://github.com/AndroidBlobs/$VT_REPO/tree/$BRANCH/\">Vendor tree</a>" >> $PROJECT_DIR/dummy_dt/working/tg.html
+        printf "\n<a href=\"https://github.com/$ORG/$DT_REPO/tree/$BRANCH/\">Device tree</a>" >> $PROJECT_DIR/dummy_dt/working/tg.html
+        printf "\n<a href=\"https://github.com/$ORG/$VT_REPO/tree/$BRANCH/\">Vendor tree</a>" >> $PROJECT_DIR/dummy_dt/working/tg.html
         CHAT_ID="@dummy_dt"
         HTML_FILE=$(cat $PROJECT_DIR/dummy_dt/working/tg.html)
         curl -s "https://api.telegram.org/bot${TG_API}/sendmessage" --data "text=${HTML_FILE}&chat_id=${CHAT_ID}&parse_mode=HTML&disable_web_page_preview=True" > /dev/null 2>&1
@@ -138,17 +141,12 @@ git_op () {
 get_configs () {
     configs=`cat $PROJECT_DIR/dummy_dt/working/configs.txt | sort`
     for config_file in $configs; do
-        if [ -z "$ROM_PATH" ]; then
-            [[ "$VERBOSE" != "n" ]] && echo -e "Downloading $config_file"
-            aria2c -x16 "$device_line/$config_file" > /dev/null 2>&1
-        else
-            cp -a "$ROM_PATH/$config_file" .
-        fi
+        cp -a "$ROM_PATH/$config_file" .
     done
 }
 
 common_dt () {
-    echo -e "Preparing Device tree configs"
+    [[ "$VERBOSE" != "n" ]] && echo -e "Preparing Device tree configs"
     cd "$DT_DIR"/
     # Audio
     mkdir -p "$DT_DIR"/configs/audio
@@ -286,7 +284,6 @@ common_dt () {
 }
 
 common_overlay () {
-    echo -e "Preparing overlays"
     mkdir -p "$PROJECT_DIR"/working/overlays "$DT_DIR"/overlay/frameworks/base/core/res/res/xml/ "$DT_DIR"/overlay/packages/apps/CarrierConfig/res/xml "$DT_DIR"/overlay/frameworks/base/core/res/res/values/ "$DT_DIR"/overlay/packages/apps/Bluetooth/res/values "$DT_DIR"/overlay-lineage/lineage-sdk/lineage/res/res/values
     cd "$PROJECT_DIR"/working/overlays
     cat "$PROJECT_DIR"/dummy_dt/working/all_files.txt | grep -iE "priv-app/SystemUI/SystemUI.apk|framework/framework-res.apk|app/CarrierConfig/CarrierConfig.apk|app/Bluetooth/Bluetooth.apk" > "$PROJECT_DIR"/dummy_dt/working/configs.txt
@@ -378,40 +375,22 @@ common_overlay () {
 # Create working directory if it does not exist
 mkdir -p "$PROJECT_DIR"/dummy_dt/working
 
-if [ -d "$1" ]; then #local dumps
-    for var in "$@"; do
-        # setup
-        ROM_PATH=$( realpath "$var" )
-        if [ -e "$ROM_PATH"/system/system/build.prop ]; then
-            SYSTEM_PATH="system/system"
-        elif [ -e "$ROM_PATH"/system/build.prop ]; then
-            SYSTEM_PATH="system"
-        fi
-        [[ -d "$ROM_PATH/system/vendor/" ]] && VENDOR_PATH="system/vendor"
-        [[ -d "$ROM_PATH/system/system/vendor/" ]] && VENDOR_PATH="system/system/vendor"
-        [[ -d "$ROM_PATH/vendor/" ]] && VENDOR_PATH="vendor"
-        common_setup
-        find "$ROM_PATH" -type f -printf '%P\n' | sort > $PROJECT_DIR/dummy_dt/working/all_files.txt
-        find "$ROM_PATH/$SYSTEM_PATH" -maxdepth 1 -name "build*prop" -exec cat {} >> $PROJECT_DIR/dummy_dt/working/system_build.prop \;
-        find "$ROM_PATH/$VENDOR_PATH" -maxdepth 1 -name "build*prop" -exec cat {} >> $PROJECT_DIR/dummy_dt/working/vendor_build.prop \;
-        # operation
-        common_core
-        cd "$PROJECT_DIR"
-    done
-elif echo "$1" | grep "http"; then #URL dumps
-    for device_line in "$@"; do
-        # setup
-        common_setup
-        wget -O $PROJECT_DIR/dummy_dt/working/all_files.txt "$device_line"/all_files.txt > /dev/null 2>&1
-        if ! grep -q "system/system/" $PROJECT_DIR/dummy_dt/working/all_files.txt; then
-            wget -O $PROJECT_DIR/dummy_dt/working/system_build.prop "$device_line"/system/build.prop > /dev/null 2>&1
-        else
-            wget -O $PROJECT_DIR/dummy_dt/working/system_build.prop "$device_line"/system/system/build.prop > /dev/null 2>&1
-        fi
-        wget -O $PROJECT_DIR/dummy_dt/working/vendor_build.prop "$device_line"/vendor/build.prop > /dev/null 2>&1
-        # operation
-        common_core
-    done
-fi
+for var in "$@"; do
+    ROM_PATH=$( realpath "$var" )
+    if [ -e "$ROM_PATH"/system/system/build.prop ]; then
+        SYSTEM_PATH="system/system"
+    elif [ -e "$ROM_PATH"/system/build.prop ]; then
+        SYSTEM_PATH="system"
+    fi
+    [[ -d "$ROM_PATH/system/vendor/" ]] && VENDOR_PATH="system/vendor"
+    [[ -d "$ROM_PATH/system/system/vendor/" ]] && VENDOR_PATH="system/system/vendor"
+    [[ -d "$ROM_PATH/vendor/" ]] && VENDOR_PATH="vendor"
+    rm -rf $PROJECT_DIR/dummy_dt/working/*
+    find "$ROM_PATH" -type f -printf '%P\n' | sort > $PROJECT_DIR/dummy_dt/working/all_files.txt
+    find "$ROM_PATH/$SYSTEM_PATH" -maxdepth 1 -name "build*prop" -exec cat {} >> $PROJECT_DIR/dummy_dt/working/system_build.prop \;
+    find "$ROM_PATH/$VENDOR_PATH" -maxdepth 1 -name "build*prop" -exec cat {} >> $PROJECT_DIR/dummy_dt/working/vendor_build.prop \;
+    common_core
+    cd "$PROJECT_DIR"
+done
 
 [[ "$VERBOSE" != "n" ]] && echo -e "Finished!"

@@ -49,11 +49,10 @@ for var in "$@"; do
         echo -e "Adding origin: git@github.com:$GITHUB_USER/"$VT_REPO".git "
         git remote add origin git@github.com:$GITHUB_USER/"$VT_REPO".git > /dev/null 2>&1
     fi
-    BRANCH=$(echo $DESCRIPTION | tr ' ' '-' | sort -u | head -n 1 )
     COMMIT_MSG=$(echo "$DEVICE: $FINGERPRINT" | sort -u | head -n 1 )
     git checkout -b $BRANCH > /dev/null 2>&1
     git add --all > /dev/null 2>&1
     echo -e "Commiting $COMMIT_MSG"
-    git -c "user.name=$GITHUB_USER" -c "user.email=$GITHUB_EMAIL" commit -sm "$COMMIT_MSG" > /dev/null 2>&1
-    git push https://"$GIT_TOKEN"@github.com/$GITHUB_USER/"$VT_REPO".git $BRANCH
+    git -c "user.name=$GITHUB_USER" -c "user.email=$GITHUB_EMAIL" commit -sm "$COMMIT_MSG" -q
+    git push https://"$GIT_TOKEN"@github.com/$GITHUB_USER/"$VT_REPO".git $BRANCH > /dev/null 2>&1
 done

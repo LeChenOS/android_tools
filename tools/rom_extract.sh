@@ -14,12 +14,6 @@ PROJECT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )/.." >/dev/null && pwd )"
 # Common stuff
 source $PROJECT_DIR/helpers/common_script.sh
 
-# Dependencies check
-if [ ! -d "$PROJECT_DIR/tools/Firmware_extractor" ] || [ ! -d "$PROJECT_DIR/tools/extract-dtb" ] || [ ! -d "$PROJECT_DIR/tools/mkbootimg_tools" ]; then
-    [[ "$VERBOSE" != "n" ]] && echo -e "Cloning dependencies..."
-    bash $PROJECT_DIR/helpers/dependencies.sh > /dev/null 2>&1
-fi
-
 # Exit if no arguements
 if [ -z "$1" ] ; then
     echo -e "Supply OTA file(s) as arguement!"
@@ -33,14 +27,21 @@ fi
 
 for var in "$@"; do
     # Variables
-    URL=$( realpath "$var" )
+    if [[ "$var" == *"http"* ]]; then
+        URL="$var"
+        dlrom
+    else
+        URL=$( realpath "$var" )
+    fi
+    [[ ! -e ${URL} ]] && echo "Error! File $URL does not exist." && break
     FILE=${URL##*/}
     EXTENSION=${URL##*.}
     UNZIP_DIR=${FILE/.$EXTENSION/}
-    PARTITIONS="system vendor cust odm oem factory product modem xrom systemex"
+    PARTITIONS="system vendor cust odm oem factory product modem xrom systemex oppo_product preload_common system_ext system_other opproduct reserve india my_preload my_odm my_stock my_operator my_country my_product my_company my_engineering my_heytap"
     [[ -d $PROJECT_DIR/dumps/$UNZIP_DIR/ ]] && rm -rf $PROJECT_DIR/dumps/$UNZIP_DIR/
 
     if [ -d "$var" ] ; then
+        echo -e "Copying images"
         cp -a "$var" $PROJECT_DIR/dumps/${UNZIP_DIR}
     else
         # Firmware extractor
@@ -55,24 +56,26 @@ for var in "$@"; do
 
     # boot.img operations
     if [ -e $PROJECT_DIR/dumps/${UNZIP_DIR}/boot.img ]; then
-        # Extract kernel
-        bash $PROJECT_DIR/tools/mkbootimg_tools/mkboot $PROJECT_DIR/dumps/${UNZIP_DIR}/boot.img $PROJECT_DIR/dumps/${UNZIP_DIR}/boot/ > /dev/null 2>&1
-        mv $PROJECT_DIR/dumps/${UNZIP_DIR}/boot/kernel $PROJECT_DIR/dumps/${UNZIP_DIR}/boot/Image.gz-dtb
-        # Extract dtb
-        [[ "$VERBOSE" != "n" ]] && echo -e "Extracting dtb"
-        python3 $PROJECT_DIR/tools/extract-dtb/extract-dtb.py $PROJECT_DIR/dumps/${UNZIP_DIR}/boot.img -o $PROJECT_DIR/dumps/${UNZIP_DIR}/bootimg > /dev/null 2>&1
-        # Extract dts
-        mkdir $PROJECT_DIR/dumps/${UNZIP_DIR}/bootdts
-        dtb_list=`find $PROJECT_DIR/dumps/${UNZIP_DIR}/bootimg -name '*.dtb' -type f -printf '%P\n' | sort`
-        for dtb_file in $dtb_list; do
-            dtc -I dtb -O dts -o $(echo "$PROJECT_DIR/dumps/${UNZIP_DIR}/bootdts/$dtb_file" | sed -r 's|.dtb|.dts|g') $PROJECT_DIR/dumps/${UNZIP_DIR}/bootimg/$dtb_file > /dev/null 2>&1
+        cd ${PROJECT_DIR}/tools/android_boot_image_editor
+        rm -rf ${PROJECT_DIR}/tools/android_boot_image_editor/build/ && ./gradlew clean > /dev/null 2>&1
+        cp -a $PROJECT_DIR/dumps/${UNZIP_DIR}/boot.img ${PROJECT_DIR}/tools/android_boot_image_editor/boot.img
+        ./gradlew unpack > /dev/null 2>&1
+        rm -rf ${PROJECT_DIR}/tools/android_boot_image_editor/boot.img
+        [[ -d ${PROJECT_DIR}/tools/android_boot_image_editor/build/unzip_boot ]] && cp -a ${PROJECT_DIR}/tools/android_boot_image_editor/build/unzip_boot $PROJECT_DIR/dumps/${UNZIP_DIR}
+        [[ -d $PROJECT_DIR/dumps/${UNZIP_DIR}/unzip_boot ]] && mv $PROJECT_DIR/dumps/${UNZIP_DIR}/unzip_boot $PROJECT_DIR/dumps/${UNZIP_DIR}/boot
+    fi
+    # dtbo.img operations
+    if [[ -f $PROJECT_DIR/dumps/${UNZIP_DIR}/dtbo.img ]]; then
+        [[ "$VERBOSE" != "n" ]] && echo -e "Extracting dtbo"
+        python3 $PROJECT_DIR/tools/extract-dtb/extract_dtb/extract_dtb.py $PROJECT_DIR/dumps/${UNZIP_DIR}/dtbo.img -o $PROJECT_DIR/dumps/${UNZIP_DIR}/dtbo > /dev/null 2>&1
+    fi
+    if [[ -d $PROJECT_DIR/dumps/${UNZIP_DIR}/dtbo ]]; then
+        mkdir -p $PROJECT_DIR/dumps/${UNZIP_DIR}/dtbs
+        for dtb in $(ls $PROJECT_DIR/dumps/${UNZIP_DIR}/dtbo/); do
+        $PROJECT_DIR/helpers/prebuilt/dt-compiler/dtc -f -I dtb -O dts -o "$PROJECT_DIR/dumps/${UNZIP_DIR}/dtbs/`echo "$dtb" | sed 's/\.dtb$//1'`.dts" $PROJECT_DIR/dumps/${UNZIP_DIR}/dtbo/$dtb  > /dev/null 2>&1
         done
     fi
-    if [[ -f $PROJECT_DIR/dumps/${UNZIP_DIR}/dtbo.img ]]; then
-        python3 $PROJECT_DIR/tools/extract-dtb/extract-dtb.py $PROJECT_DIR/dumps/${UNZIP_DIR}/dtbo.img -o $PROJECT_DIR/dumps/${UNZIP_DIR}/dtbo > /dev/null 2>&1
-        [[ "$VERBOSE" != "n" ]] && echo -e "dtbo extracted"
-    fi
-
+    
     # mounting
     for file in $PARTITIONS; do
         if [ -e "$PROJECT_DIR/dumps/${UNZIP_DIR}/$file.img" ]; then
@@ -80,20 +83,18 @@ for var in "$@"; do
             echo -e "Mounting & copying ${DIR_NAME}"
             mkdir -p $PROJECT_DIR/dumps/${UNZIP_DIR}/$DIR_NAME $PROJECT_DIR/dumps/$UNZIP_DIR/tempmount
             # mount & permissions
-            if [ "$file" == "modem" ]; then
-                echo $user_password | sudo -S mount -t vfat -o loop "$PROJECT_DIR/dumps/${UNZIP_DIR}/$file.img" "$PROJECT_DIR/dumps/${UNZIP_DIR}/tempmount" > /dev/null 2>&1
-            else
-                echo $user_password | sudo -S mount -t ext4 -o loop "$PROJECT_DIR/dumps/${UNZIP_DIR}/$file.img" "$PROJECT_DIR/dumps/${UNZIP_DIR}/tempmount" > /dev/null 2>&1
-            fi
+            echo $user_password | sudo -S mount -o loop "$PROJECT_DIR/dumps/${UNZIP_DIR}/$file.img" "$PROJECT_DIR/dumps/${UNZIP_DIR}/tempmount" > /dev/null 2>&1
             echo $user_password | sudo -S chown -R $USER:$USER "$PROJECT_DIR/dumps/${UNZIP_DIR}/tempmount" > /dev/null 2>&1
             echo $user_password | sudo -S chmod -R u+rwX "$PROJECT_DIR/dumps/${UNZIP_DIR}/tempmount" > /dev/null 2>&1
             # copy to dump
             cp -a $PROJECT_DIR/dumps/${UNZIP_DIR}/tempmount/* $PROJECT_DIR/dumps/$UNZIP_DIR/$DIR_NAME > /dev/null 2>&1
-            # cleanup
+            # unmount
             echo $user_password | sudo -S umount -l "$PROJECT_DIR/dumps/${UNZIP_DIR}/tempmount" > /dev/null 2>&1
+            # if empty partitions dump, try with 7z
             if [[ -z "$(ls -A $PROJECT_DIR/dumps/$UNZIP_DIR/$DIR_NAME)" ]]; then
                 7z x $PROJECT_DIR/dumps/${UNZIP_DIR}/$file.img -y -o$PROJECT_DIR/dumps/${UNZIP_DIR}/$file/ 2>/dev/null >> $PROJECT_DIR/dumps/${UNZIP_DIR}/zip.log
             fi
+            # cleanup
             rm -rf $PROJECT_DIR/dumps/${UNZIP_DIR}/$file.img $PROJECT_DIR/dumps/${UNZIP_DIR}/zip.log $PROJECT_DIR/dumps/$UNZIP_DIR/tempmount > /dev/null 2>&1
         fi
     done
@@ -113,4 +114,6 @@ for var in "$@"; do
     duration=$SECONDS
     [[ "$VERBOSE" != "n" ]] && echo -e "Dump location: $PROJECT_DIR/dumps/$UNZIP_DIR/"
     [[ "$VERBOSE" != "n" ]] && echo -e "Extract time: $(($duration / 60)) minutes and $(($duration % 60)) seconds."
+    [[ "$DUMPPUSH" == "y" ]] && bash "$PROJECT_DIR/tools/dump_push.sh" "$PROJECT_DIR/dumps/$UNZIP_DIR/"
+    [[ "$DUMMYDT" == "y" ]] && bash "$PROJECT_DIR/tools/dummy_dt.sh" "$PROJECT_DIR/dumps/$UNZIP_DIR/"
 done
